@@ -22,6 +22,16 @@ MODEL_PRESETS = {
     "accurate": "mlx-community/whisper-large-v3-mlx",
 }
 
+# Current yt-dlp YouTube extraction requires an external JS runtime for its
+# challenge solver. Node is already required by the React app, so we reuse it
+# instead of adding a second runtime such as Deno.
+YTDLP_COMMON_OPTIONS = {
+    "quiet": True,
+    "no_warnings": True,
+    "noplaylist": True,
+    "js_runtimes": {"node": {}},
+}
+
 # MLX model execution is intentionally serialized for phase 1. Running multiple
 # large Whisper jobs simultaneously on unified memory hurts latency and can
 # create memory pressure on laptops.
@@ -67,6 +77,7 @@ def health() -> dict:
         "ok": True,
         "platform": f"{platform.system()} {platform.machine()}",
         "default_model": DEFAULT_MODEL,
+        "youtube_js_runtime": "node",
     }
 
 
@@ -78,7 +89,10 @@ def _resolve_model(requested: str) -> str:
     # Custom models are deliberately limited to Hugging Face-style IDs for now.
     # Local filesystem model loading can be added later with an explicit path allowlist.
     if "/" not in requested or requested.startswith(("/", ".")):
-        raise HTTPException(status_code=400, detail="Custom model must be a Hugging Face model ID such as mlx-community/whisper-large-v3-turbo.")
+        raise HTTPException(
+            status_code=400,
+            detail="Custom model must be a Hugging Face model ID such as mlx-community/whisper-large-v3-turbo.",
+        )
     return requested
 
 
@@ -86,13 +100,14 @@ def _download_audio(url: str, workdir: Path) -> tuple[Path, dict]:
     # First fetch metadata without downloading so an accidental playlist or very
     # long video does not start a large transfer.
     metadata_options = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
+        **YTDLP_COMMON_OPTIONS,
         "skip_download": True,
     }
     with YoutubeDL(metadata_options) as ydl:
         info = ydl.extract_info(url, download=False)
+
+    if info.get("is_live"):
+        raise HTTPException(status_code=400, detail="Live streams are not supported yet. Use a finished YouTube video.")
 
     duration = int(info.get("duration") or 0)
     if duration and duration > MAX_VIDEO_SECONDS:
@@ -103,11 +118,9 @@ def _download_audio(url: str, workdir: Path) -> tuple[Path, dict]:
 
     output_template = str(workdir / "source.%(ext)s")
     download_options = {
+        **YTDLP_COMMON_OPTIONS,
         "format": "bestaudio/best",
         "outtmpl": output_template,
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
