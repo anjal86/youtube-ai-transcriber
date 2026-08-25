@@ -10,3 +10,8 @@ __pycache__/
 .mypy_cache/
 .vscode/
 .idea/
+data/
+*.mp3
+*.wav
+*.m4a
+*.webm
